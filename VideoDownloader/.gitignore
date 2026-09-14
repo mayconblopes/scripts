@@ -1,0 +1,27 @@
+# Ambientes/cache locais
+.transcribe_deps/
+.torch_runtime/
+.hf_runtime/
+.faster_runtime/
+.subtitle_runtime_py*/
+.torch_download/
+.torch_test/
+.torch_extract/
+.whisper_models/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Clipboard Sync
+clipboard_sync/pc/clipboard_sync.token
+clipboard_sync/android/.gradle/
+clipboard_sync/android/local.properties
+clipboard_sync/android/**/build/
+
+# Mídia baixada e saídas temporárias
+downloads/
+_old/downloads/
+subtitle_generator/models/*
+!subtitle_generator/models/.gitkeep
+subtitle_generator/output/*
+!subtitle_generator/output/.gitkeep

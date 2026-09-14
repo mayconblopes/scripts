@@ -1,0 +1,7 @@
+# Dependências da pipeline local.
+faster-whisper
+transformers<5
+tokenizers>=0.22,<0.23.1
+huggingface-hub==0.36.2
+torch
+sentencepiece

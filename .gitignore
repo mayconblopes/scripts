@@ -1,0 +1,68 @@
+# Contexto local do agente; pode conter informações específicas deste ambiente.
+AGENTS.md
+
+# Ambientes locais, dependências e caches de desenvolvimento Python.
+.venv/
+venv/
+env/
+ENV/
+**/.venv/
+**/venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.tox/
+.nox/
+build/
+**/build/
+dist/
+*.egg-info/
+
+# Caches locais do gerador de legendas e modelos de IA.
+VideoDownloader/.transcribe_deps/
+VideoDownloader/.whisper_models/
+VideoDownloader/subtitle_generator/models/
+
+# Downloads e saídas geradas pelos scripts.
+**/downloads/
+VideoCompressor/output/
+VideoDownloader/subtitle_generator/output/
+
+# Caches e artefatos de build Android/Java.
+**/.gradle/
+**/.gradle-user/
+*.apk
+*.aab
+**/local.properties
+
+# Inventários gerados localmente.
+/disk_inventory_*.txt
+/inventario.json
+
+# Arquivos temporários de codificação em duas passagens.
+*.log
+*.log.mbtree
+*.tmp
+*.temp
+*.part
+*.crdownload
+
+# Configurações locais, segredos e arquivos do sistema operacional.
+.env
+.env.*
+!.env.example
+!.env.template
+*.token
+*.keystore
+*.jks
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
