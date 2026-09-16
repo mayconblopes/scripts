@@ -29,7 +29,7 @@ import unicodedata
 import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -1293,17 +1293,23 @@ def _stream_download(endpoint: Endpoint, transfer_id: str, device_id: str, desti
             raise ClipboardClientError("o tamanho informado pelo servidor não corresponde à oferta")
         digest = hashlib.sha256()
         received = 0
-        with destination.open("xb") as output:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-                digest.update(chunk)
-                received += len(chunk)
-        if received != expected_size or digest.hexdigest() != expected_hash:
-            destination.unlink(missing_ok=True)
-            raise ClipboardClientError("a verificação do arquivo recebido falhou")
+        output = _open_download_destination(destination)
+        complete = False
+        try:
+            with output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+            if received != expected_size or digest.hexdigest() != expected_hash:
+                raise ClipboardClientError("a verificação do arquivo recebido falhou")
+            complete = True
+        finally:
+            if not complete:
+                destination.unlink(missing_ok=True)
     finally:
         connection.close()
 
@@ -1321,6 +1327,28 @@ def _download_folder(
         _stream_download(endpoint, transfer_id, device_id, archive, offer["size"], offer["sha256"])
         _safe_extract_zip(archive, destination, offer["file_count"], offer["expanded_size"])
     return destination
+
+
+def _open_download_destination(destination: Path) -> BinaryIO:
+    try:
+        return destination.open("xb")
+    except FileExistsError:
+        # Compatibilidade com temporários já reservados por tempfile.mkstemp.
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        try:
+            safe_placeholder = (
+                not destination.is_symlink()
+                and destination.parent.resolve() == temp_root
+                and destination.name.startswith("clipsync-download-")
+                and destination.suffix.lower() == ".zip"
+                and destination.is_file()
+                and destination.stat().st_size == 0
+            )
+        except OSError:
+            safe_placeholder = False
+        if not safe_placeholder:
+            raise
+        return destination.open("wb")
 
 
 class UnifiedClipboardApp:

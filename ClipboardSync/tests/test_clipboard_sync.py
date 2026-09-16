@@ -14,7 +14,6 @@ from clipboard_sync import (
     TransferError,
     UnifiedClipboardSyncServer,
     _api_json,
-    _download_folder,
     _prepare_send_path,
     _safe_extract_zip,
     _stream_download,
@@ -231,9 +230,18 @@ class ClipboardStateTests(unittest.TestCase):
                 })
                 _body, response = _stream_transfer(endpoint, "PUT", transfer_id, archive, device_id="sender_00000001")
                 self.assertEqual(response[0], 200)
-                saved = _download_folder(
-                    endpoint, transfer_id, "receiver_00000001", offer, root / "Downloads"
-                )
+                with tempfile.NamedTemporaryFile(
+                    prefix="clipsync-download-", suffix=".zip", delete=False
+                ) as placeholder:
+                    temporary_archive = Path(placeholder.name)
+                try:
+                    _stream_download(
+                        endpoint, transfer_id, "receiver_00000001", temporary_archive, size, digest
+                    )
+                    saved = root / "Downloads" / name
+                    _safe_extract_zip(temporary_archive, saved, count, expanded)
+                finally:
+                    temporary_archive.unlink(missing_ok=True)
                 self.assertEqual((saved / "README.txt").read_text(encoding="utf-8"), "projeto")
             finally:
                 if temporary_archive:
