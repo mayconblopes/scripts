@@ -1,18 +1,27 @@
 import sys
+import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from clipboard_sync import (
-    ClipboardState,
+    ClientClipboardState as ClipboardState,
     Endpoint,
+    FileTransferStore,
+    TransferError,
+    UnifiedClipboardSyncServer,
+    _api_json,
+    _prepare_send_path,
+    _safe_extract_zip,
+    _stream_download,
+    _stream_transfer,
     content_hash,
     parse_discovery_response,
     server_request,
 )  # noqa: E402
-from pc.clipboard_sync_server import ClipboardSyncServer  # noqa: E402
 
 
 class FakeBackend:
@@ -91,7 +100,7 @@ class ClipboardStateTests(unittest.TestCase):
 
     def test_desktop_client_uses_server_http_api(self):
         state = FakeServerState()
-        server = ClipboardSyncServer(("127.0.0.1", 0), "teste-token", state)
+        server = UnifiedClipboardSyncServer(("127.0.0.1", 0), "teste-token", state, FileTransferStore())
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         endpoint = Endpoint("127.0.0.1", server.server_port, "teste-token")
@@ -104,6 +113,109 @@ class ClipboardStateTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+    def test_first_transfer_acceptance_wins(self):
+        store = FileTransferStore()
+        store.register_device("receiver_00000001", "PC destino")
+        store.register_device("receiver_00000002", "Android")
+        offer = store.create_offer({
+            "device_id": "sender_00000001", "device_name": "PC origem", "name": "arquivo.txt",
+            "kind": "file", "size": 4, "expanded_size": 4, "file_count": 1,
+            "sha256": content_hash("data"),
+        })
+
+        store.accept(offer["id"], "receiver_00000001", "PC destino")
+        with self.assertRaises(TransferError) as error:
+            store.accept(offer["id"], "receiver_00000002", "Android")
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_sender_is_not_an_offer_recipient(self):
+        store = FileTransferStore()
+        offer = store.create_offer({
+            "device_id": "sender_00000001", "device_name": "PC origem", "name": "arquivo.txt",
+            "kind": "file", "size": 4, "expanded_size": 4, "file_count": 1,
+            "sha256": content_hash("data"),
+        })
+        with self.assertRaises(TransferError) as error:
+            store.accept(offer["id"], "sender_00000001", "PC origem")
+        self.assertEqual(error.exception.status_code, 403)
+
+    def test_device_starting_during_offer_can_receive_it(self):
+        store = FileTransferStore()
+        offer = store.create_offer({
+            "device_id": "sender_00000001", "device_name": "PC origem", "name": "arquivo.txt",
+            "kind": "file", "size": 4, "expanded_size": 4, "file_count": 1,
+            "sha256": content_hash("data"),
+        })
+        available = store.list_offers("receiver_00000001", "PC destino")
+        self.assertEqual([item["id"] for item in available], [offer["id"]])
+
+    def test_file_offer_upload_download_and_completion(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = FileTransferStore(root / "spool")
+            state = FakeServerState()
+            server = UnifiedClipboardSyncServer(("127.0.0.1", 0), "teste-token", state, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            endpoint = Endpoint("127.0.0.1", server.server_port, "teste-token")
+            source = root / "source.txt"
+            source.write_bytes(b"arquivo de teste")
+            digest = __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+            try:
+                _api_json(endpoint, "GET", "/v2/offers", device_id="receiver_00000001", device_name="PC destino")
+                offer = _api_json(endpoint, "POST", "/v2/offers", {
+                    "device_id": "sender_00000001", "device_name": "PC origem", "name": source.name,
+                    "kind": "file", "size": source.stat().st_size,
+                    "expanded_size": source.stat().st_size, "file_count": 1, "sha256": digest,
+                })
+                transfer_id = offer["id"]
+                _api_json(endpoint, "POST", f"/v2/offers/{transfer_id}/accept", {
+                    "device_id": "receiver_00000001", "device_name": "PC destino",
+                })
+                body, response = _stream_transfer(endpoint, "PUT", transfer_id, source, device_id="sender_00000001")
+                self.assertEqual(response[0], 200, body.decode("utf-8", errors="replace"))
+                ready = _api_json(endpoint, "GET", f"/v2/offers/{transfer_id}/status", device_id="receiver_00000001")
+                self.assertEqual(ready["status"], "ready")
+                destination = root / "download.txt"
+                _stream_download(endpoint, transfer_id, "receiver_00000001", destination, source.stat().st_size, digest)
+                self.assertEqual(destination.read_bytes(), source.read_bytes())
+                _api_json(endpoint, "POST", f"/v2/transfers/{transfer_id}/complete", {"device_id": "receiver_00000001"})
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+    def test_folder_snapshot_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "projeto"
+            (source / "subpasta").mkdir(parents=True)
+            (source / "arquivo.txt").write_text("conteúdo", encoding="utf-8")
+            (source / "subpasta" / "outro.txt").write_text("mais", encoding="utf-8")
+            archive, name, _size, expanded, count, _digest, temporary_archive = _prepare_send_path(source)
+            self.assertTrue(temporary_archive)
+            destination = root / "extraido"
+            try:
+                _safe_extract_zip(archive, destination, count, expanded)
+                self.assertEqual(name, "projeto")
+                self.assertEqual((destination / "arquivo.txt").read_text(encoding="utf-8"), "conteúdo")
+                self.assertEqual((destination / "subpasta" / "outro.txt").read_text(encoding="utf-8"), "mais")
+            finally:
+                archive.unlink(missing_ok=True)
+
+    def test_offer_expires_after_thirty_second_deadline(self):
+        store = FileTransferStore()
+        store.register_device("receiver_00000001", "PC destino")
+        offer = store.create_offer({
+            "device_id": "sender_00000001", "device_name": "PC origem", "name": "arquivo.txt",
+            "kind": "file", "size": 4, "expanded_size": 4, "file_count": 1,
+            "sha256": content_hash("data"),
+        })
+        store._offers[offer["id"]].deadline = time.monotonic() - 1
+        with self.assertRaises(TransferError) as error:
+            store.accept(offer["id"], "receiver_00000001", "PC destino")
+        self.assertEqual(error.exception.status_code, 410)
 
 
 if __name__ == "__main__":
