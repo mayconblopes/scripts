@@ -626,19 +626,34 @@ class UnifiedClipboardRequestHandler(ClipboardRequestHandler):
                 offer, path = self.server.transfers.download(
                     match.group(1), self.headers.get("X-Clipboard-Device-Id", "")
                 )
-                self.send_response(200)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(offer.size))
-                self.send_header("X-Clipboard-File-Name", _encode_header_value(offer.name))
-                self.send_header("X-Clipboard-File-Kind", offer.kind)
-                self.send_header("X-Clipboard-File-SHA256", offer.sha256)
-                self.end_headers()
-                with path.open("rb") as source:
-                    shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+                try:
+                    source = path.open("rb")
+                except OSError as error:
+                    self._send_json(500, {"error": f"não foi possível ler o arquivo temporário: {error}"})
+                    return
+                headers_sent = False
+                with source:
+                    try:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        self.send_header("Content-Length", str(offer.size))
+                        self.send_header("X-Clipboard-File-Name", _encode_header_value(offer.name))
+                        self.send_header("X-Clipboard-File-Kind", offer.kind)
+                        self.send_header("X-Clipboard-File-SHA256", offer.sha256)
+                        self.end_headers()
+                        headers_sent = True
+                        shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+                    except (ConnectionError, TimeoutError):
+                        # Clientes podem cancelar a transferência ao fechar a janela ou falhar ao salvar.
+                        return
+                    except OSError as error:
+                        if headers_sent:
+                            print(f"[HTTP] falha durante envio do arquivo {offer.transfer_id}: {error}")
+                        else:
+                            with contextlib.suppress(ConnectionError, OSError):
+                                self._send_json(500, {"error": f"não foi possível enviar o arquivo: {error}"})
             except TransferError as error:
                 self._send_json(error.status_code, {"error": str(error)})
-            except OSError as error:
-                self._send_json(500, {"error": f"não foi possível ler o arquivo temporário: {error}"})
             return
 
         super().do_GET()
@@ -1293,6 +1308,21 @@ def _stream_download(endpoint: Endpoint, transfer_id: str, device_id: str, desti
         connection.close()
 
 
+def _download_folder(
+    endpoint: Endpoint,
+    transfer_id: str,
+    device_id: str,
+    offer: dict[str, Any],
+    downloads: Path,
+) -> Path:
+    destination = _unique_download_path(downloads, offer["name"])
+    with tempfile.TemporaryDirectory(prefix="clipsync-download-") as temporary_directory:
+        archive = Path(temporary_directory) / "folder.zip"
+        _stream_download(endpoint, transfer_id, device_id, archive, offer["size"], offer["sha256"])
+        _safe_extract_zip(archive, destination, offer["file_count"], offer["expanded_size"])
+    return destination
+
+
 class UnifiedClipboardApp:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -1429,16 +1459,7 @@ class UnifiedClipboardApp:
                 time.sleep(0.5)
             downloads = self.args.downloads.expanduser()
             if offer["kind"] == "folder":
-                destination = _unique_download_path(downloads, offer["name"])
-                descriptor, temporary_name = tempfile.mkstemp(prefix="clipsync-download-", suffix=".zip")
-                os.close(descriptor)
-                temporary_path = Path(temporary_name)
-                try:
-                    _stream_download(endpoint, transfer_id, self.device_id, temporary_path, offer["size"], offer["sha256"])
-                    _safe_extract_zip(temporary_path, destination, offer["file_count"], offer["expanded_size"])
-                finally:
-                    temporary_path.unlink(missing_ok=True)
-                saved = destination
+                saved = _download_folder(endpoint, transfer_id, self.device_id, offer, downloads)
             else:
                 saved = _unique_download_path(downloads, offer["name"])
                 _stream_download(endpoint, transfer_id, self.device_id, saved, offer["size"], offer["sha256"])

@@ -14,6 +14,7 @@ from clipboard_sync import (
     TransferError,
     UnifiedClipboardSyncServer,
     _api_json,
+    _download_folder,
     _prepare_send_path,
     _safe_extract_zip,
     _stream_download,
@@ -203,6 +204,43 @@ class ClipboardStateTests(unittest.TestCase):
                 self.assertEqual((destination / "subpasta" / "outro.txt").read_text(encoding="utf-8"), "mais")
             finally:
                 archive.unlink(missing_ok=True)
+
+    def test_folder_transfer_download_uses_new_archive_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_directory = root / "LMay Ocarina Tab Maker"
+            source_directory.mkdir()
+            (source_directory / "README.txt").write_text("projeto", encoding="utf-8")
+            archive, name, size, expanded, count, digest, temporary_archive = _prepare_send_path(source_directory)
+            store = FileTransferStore(root / "spool")
+            state = FakeServerState()
+            server = UnifiedClipboardSyncServer(("127.0.0.1", 0), "teste-token", state, store)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            endpoint = Endpoint("127.0.0.1", server.server_port, "teste-token")
+            try:
+                _api_json(endpoint, "GET", "/v2/offers", device_id="receiver_00000001", device_name="PC destino")
+                offer = _api_json(endpoint, "POST", "/v2/offers", {
+                    "device_id": "sender_00000001", "device_name": "PC origem", "name": name,
+                    "kind": "folder", "size": size, "expanded_size": expanded,
+                    "file_count": count, "sha256": digest,
+                })
+                transfer_id = offer["id"]
+                _api_json(endpoint, "POST", f"/v2/offers/{transfer_id}/accept", {
+                    "device_id": "receiver_00000001", "device_name": "PC destino",
+                })
+                _body, response = _stream_transfer(endpoint, "PUT", transfer_id, archive, device_id="sender_00000001")
+                self.assertEqual(response[0], 200)
+                saved = _download_folder(
+                    endpoint, transfer_id, "receiver_00000001", offer, root / "Downloads"
+                )
+                self.assertEqual((saved / "README.txt").read_text(encoding="utf-8"), "projeto")
+            finally:
+                if temporary_archive:
+                    archive.unlink(missing_ok=True)
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
     def test_offer_expires_after_thirty_second_deadline(self):
         store = FileTransferStore()
