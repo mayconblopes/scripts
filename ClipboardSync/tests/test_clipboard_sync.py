@@ -178,7 +178,13 @@ class ClipboardStateTests(unittest.TestCase):
                 ready = _api_json(endpoint, "GET", f"/v2/offers/{transfer_id}/status", device_id="receiver_00000001")
                 self.assertEqual(ready["status"], "ready")
                 destination = root / "download.txt"
-                _stream_download(endpoint, transfer_id, "receiver_00000001", destination, source.stat().st_size, digest)
+                progress = []
+                _stream_download(
+                    endpoint, transfer_id, "receiver_00000001", destination,
+                    source.stat().st_size, digest,
+                    lambda received, total, complete: progress.append((received, total, complete)),
+                )
+                self.assertEqual(progress[-1], (source.stat().st_size, source.stat().st_size, True))
                 self.assertEqual(destination.read_bytes(), source.read_bytes())
                 _api_json(endpoint, "POST", f"/v2/transfers/{transfer_id}/complete", {"device_id": "receiver_00000001"})
             finally:

@@ -29,7 +29,7 @@ import unicodedata
 import uuid
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -1279,7 +1279,15 @@ def _stream_transfer(endpoint: Endpoint, method: str, transfer_id: str, path: Pa
         connection.close()
 
 
-def _stream_download(endpoint: Endpoint, transfer_id: str, device_id: str, destination: Path, expected_size: int, expected_hash: str) -> None:
+def _stream_download(
+    endpoint: Endpoint,
+    transfer_id: str,
+    device_id: str,
+    destination: Path,
+    expected_size: int,
+    expected_hash: str,
+    progress: Callable[[int, int, bool], None] | None = None,
+) -> None:
     connection = http.client.HTTPConnection(endpoint.host, endpoint.port, timeout=60)
     try:
         connection.request(
@@ -1304,9 +1312,13 @@ def _stream_download(endpoint: Endpoint, transfer_id: str, device_id: str, desti
                     output.write(chunk)
                     digest.update(chunk)
                     received += len(chunk)
+                    if progress is not None:
+                        progress(received, expected_size, False)
             if received != expected_size or digest.hexdigest() != expected_hash:
                 raise ClipboardClientError("a verificação do arquivo recebido falhou")
             complete = True
+            if progress is not None:
+                progress(received, expected_size, True)
         finally:
             if not complete:
                 destination.unlink(missing_ok=True)
@@ -1320,11 +1332,14 @@ def _download_folder(
     device_id: str,
     offer: dict[str, Any],
     downloads: Path,
+    progress: Callable[[int, int, bool], None] | None = None,
 ) -> Path:
     destination = _unique_download_path(downloads, offer["name"])
     with tempfile.TemporaryDirectory(prefix="clipsync-download-") as temporary_directory:
         archive = Path(temporary_directory) / "folder.zip"
-        _stream_download(endpoint, transfer_id, device_id, archive, offer["size"], offer["sha256"])
+        _stream_download(
+            endpoint, transfer_id, device_id, archive, offer["size"], offer["sha256"], progress
+        )
         _safe_extract_zip(archive, destination, offer["file_count"], offer["expanded_size"])
     return destination
 
@@ -1473,6 +1488,18 @@ class UnifiedClipboardApp:
         endpoint = self.endpoint
         if endpoint is None:
             return
+        progress_started = False
+        last_percent = -1
+
+        def show_progress(received: int, total: int, completed: bool) -> None:
+            nonlocal progress_started, last_percent
+            progress_started = True
+            percent = 100 if completed else (min(99, received * 100 // total) if total else 0)
+            if percent != last_percent:
+                ending = "\n" if completed else ""
+                print(f"\r[i] Recebendo {offer['name']}: {percent}%", end=ending, flush=True)
+                last_percent = percent
+
         try:
             _api_json(endpoint, "POST", f"/v2/offers/{transfer_id}/accept", {
                 "device_id": self.device_id, "device_name": self.device_name,
@@ -1486,14 +1513,25 @@ class UnifiedClipboardApp:
                     raise ClipboardClientError("a transferência foi cancelada ou falhou")
                 time.sleep(0.5)
             downloads = self.args.downloads.expanduser()
+            print(f"[i] Recebendo {offer['name']}: 0%", end="", flush=True)
+            progress_started = True
+            last_percent = 0
             if offer["kind"] == "folder":
-                saved = _download_folder(endpoint, transfer_id, self.device_id, offer, downloads)
+                saved = _download_folder(
+                    endpoint, transfer_id, self.device_id, offer, downloads, show_progress
+                )
+                print(f"[i] Extraindo pasta {offer['name']}...")
             else:
                 saved = _unique_download_path(downloads, offer["name"])
-                _stream_download(endpoint, transfer_id, self.device_id, saved, offer["size"], offer["sha256"])
+                _stream_download(
+                    endpoint, transfer_id, self.device_id, saved,
+                    offer["size"], offer["sha256"], show_progress,
+                )
             _api_json(endpoint, "POST", f"/v2/transfers/{transfer_id}/complete", {"device_id": self.device_id})
             print(f"[+] Arquivo recebido em: {saved}")
         except (OSError, KeyError, ClipboardClientError, TransferError) as error:
+            if progress_started and last_percent < 100:
+                print()
             print(f"[ERRO] Não foi possível receber {offer.get('name', 'o arquivo')}: {error}")
 
     def _check_offers(self) -> None:
