@@ -1,8 +1,8 @@
 # Clipboard Sync
 
-Pequeno sincronizador local de clipboard de texto entre o Windows e um
-celular Android. Não usa nuvem: o PC oferece uma API HTTP somente na rede
-local e o APK localiza o servidor por descoberta UDP.
+Pequeno sincronizador local de clipboard de texto entre computadores Windows
+e um celular Android. Não usa nuvem: o PC servidor oferece uma API HTTP somente
+na rede local, descoberta por UDP.
 
 ## PC
 
@@ -35,6 +35,33 @@ O servidor aceita texto de até 2 MiB. Ele monitora mudanças no clipboard do PC
 recebe o clipboard do Android por `POST` e responde ao pedido de captura por
 `GET`. O aplicativo não precisa de configuração manual de IP.
 
+## Outro computador como cliente
+
+No segundo computador, com Python 3 instalado, execute:
+
+```powershell
+python ClipboardSync/clipboard_sync.py
+```
+
+O cliente procura o servidor automaticamente e sincroniza o texto
+continuamente nos dois sentidos. Ao iniciar, o clipboard do servidor é copiado
+para o cliente. Para iniciar usando o conteúdo local do cliente, acrescente
+`--initial-sync client`. Encerre com `Ctrl+C`.
+
+Se a descoberta automática estiver bloqueada, informe o endereço IP do
+servidor. O cliente pedirá o token, a menos que você passe uma cópia local do
+arquivo `clipboard_sync.token`:
+
+```powershell
+python ClipboardSync/clipboard_sync.py --server 192.168.1.20
+python ClipboardSync/clipboard_sync.py --server 192.168.1.20 --token-file .\clipboard_sync.token
+```
+
+Os dois computadores precisam estar na mesma rede local. No PC servidor,
+permita as portas TCP `8765` e UDP `8766` no Firewall para redes privadas,
+usando as regras da seção anterior. O cliente também precisa poder acessar
+essas portas na rede.
+
 ## Android
 
 Abra `clipboard_sync/android` no Android Studio e execute `assembleDebug`, ou
@@ -65,6 +92,8 @@ botões:
 ## Segurança e limitações
 
 O projeto é destinado a uso pessoal em uma rede confiável. A comunicação local
-usa HTTP, protegida por um token aleatório, mas não há criptografia TLS. Não
-exponha a porta 8765 à Internet. A primeira versão sincroniza somente texto;
-imagens e arquivos não são incluídos.
+usa HTTP, protegida por um token aleatório, mas não há criptografia TLS. A
+descoberta UDP compartilha o token com dispositivos na mesma rede; não exponha
+as portas à Internet nem use em uma rede pública. A sincronização inclui
+somente texto; imagens e arquivos não são transferidos. Fora do Windows, o
+cliente desktop usa Tkinter e precisa de um ambiente gráfico disponível.

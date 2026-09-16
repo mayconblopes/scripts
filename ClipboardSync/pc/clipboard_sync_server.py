@@ -160,13 +160,17 @@ class ClipboardState:
                 self._source = "pc"
             return self._text, self._updated_at, self._source, changed
 
-    def write_from_phone(self, text: str) -> tuple[float, str]:
+    def write_from_client(self, text: str, source: str) -> tuple[float, str]:
         write_clipboard(text)
         with self._lock:
             self._text = text
             self._updated_at = time.time()
-            self._source = "android"
+            self._source = source
             return self._updated_at, self._source
+
+    def write_from_phone(self, text: str) -> tuple[float, str]:
+        """Mantém compatibilidade com chamadas antigas do servidor."""
+        return self.write_from_client(text, "android")
 
 
 class ClipboardSyncServer(ThreadingHTTPServer):
@@ -235,8 +239,17 @@ class ClipboardRequestHandler(BaseHTTPRequestHandler):
             text = payload["text"]
             if not isinstance(text, str):
                 raise TypeError
-            updated_at, source = self.server.state.write_from_phone(text)
-            print(f"[+] Clipboard recebido do Android ({len(text)} caracteres).")
+            source = self.headers.get("X-Clipboard-Source", "android")
+            if source not in {"android", "desktop"}:
+                source = "cliente"
+            updated_at, source = self.server.state.write_from_client(text, source)
+            if source == "android":
+                label = "Android"
+            elif source == "desktop":
+                label = "PC cliente"
+            else:
+                label = "cliente"
+            print(f"[+] Clipboard recebido de {label} ({len(text)} caracteres).")
             self._send_json(200, {"ok": True, "updated_at": updated_at, "source": source})
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
             self._send_json(400, {"error": "JSON inválido; esperado {\"text\": \"...\"}"})
